@@ -19,7 +19,15 @@ Ask the user:
 
 Follow these steps to build a content-addressable profile for the skill's MCP server dependencies.
 
-### Step 2.1 — Collect servers
+### Step 2.1 — Collect registry info
+
+Ask the user:
+- What container registry will they push to? (e.g. `docker.io`, `ghcr.io`)
+- What is their namespace on that registry? (e.g. their Docker Hub username or GitHub org)
+
+The profile image will be pushed as `{registry}/{namespace}/{profile-name}`.
+
+### Step 2.2 — Collect servers
 
 Ask the user for the list of MCP servers the skill needs. For each server:
 - The server name as it appears in the MCP registry (e.g. `io.github.owner/my-server`)
@@ -27,7 +35,7 @@ Ask the user for the list of MCP servers the skill needs. For each server:
 
 Repeat until the user is done adding servers.
 
-### Step 2.2 — Fetch registry entries
+### Step 2.3 — Fetch registry entries
 
 URL-encode each server name before use (replace every `/` with `%2F`).
 
@@ -48,7 +56,7 @@ From the response, find the entry in `packages` with `registryType: oci`. Extrac
 
 If no OCI package exists for a server, inform the user and skip it.
 
-### Step 2.3 — Resolve tags to digests
+### Step 2.4 — Resolve tags to digests
 
 For each OCI identifier, resolve the mutable tag to an immutable manifest digest. `docker pull` handles registry authentication automatically:
 
@@ -61,7 +69,7 @@ The output is `{registry}/{repository}@sha256:{manifest-digest}`. This is the pi
 
 If the pull fails, inform the user and ask whether to skip the server or abort.
 
-### Step 2.4 — Walk through configuration options
+### Step 2.5 — Walk through configuration options
 
 For each server, present its `environmentVariables` one at a time. For each option, show:
 - Name
@@ -72,7 +80,7 @@ For each server, present its `environmentVariables` one at a time. For each opti
 
 Ask: set a value for this option, or leave it undefined for the end-user to supply?
 
-### Step 2.5 — Emit the profile manifest
+### Step 2.6 — Emit the profile manifest
 
 Write a YAML file:
 
@@ -88,7 +96,7 @@ servers:
 
 Ask the user what to name the profile and where to write the file before writing it.
 
-### Step 2.6 — Build scratch OCI image
+### Step 2.7 — Build and push scratch OCI image
 
 Write a `Dockerfile` next to `profile.yaml`:
 
@@ -97,7 +105,7 @@ FROM scratch
 COPY profile.yaml /profile.yaml
 ```
 
-Detect the host architecture and build, loading directly into the local Docker daemon:
+Detect the host architecture, build, and push to the registry collected in Step 2.1:
 
 ```bash
 ARCH=$(uname -m)
@@ -106,12 +114,13 @@ case "$ARCH" in
   *)             PLATFORM="linux/amd64" ;;
 esac
 
-docker buildx build --platform $PLATFORM -t {profile-name} --load .
-DIGEST=$(docker inspect --format='{{.Id}}' {profile-name})
-echo "Profile digest: ${DIGEST}"
+IMAGE={registry}/{namespace}/{profile-name}
+docker buildx build --platform $PLATFORM -t $IMAGE --push --metadata-file /tmp/profile-build-meta.json .
+DIGEST=$(jq -r '."containerimage.digest"' /tmp/profile-build-meta.json)
+echo "Profile digest: ${IMAGE}@${DIGEST}"
 ```
 
-Use `${DIGEST}` (e.g. `sha256:abc123...`) as the `profile:` value in the skill's frontmatter. This is the image's content-addressable identifier. The `--load` flag stores the image in the local Docker daemon so it can be referenced by this digest later.
+`${IMAGE}@${DIGEST}` is the fully-qualified registry reference (e.g. `docker.io/myuser/my-profile@sha256:abc123...`). Use this as the `profile:` value in the skill's frontmatter. This digest is immutable and resolves from any machine.
 
 ## Phase 3 — Define skill tools
 
@@ -128,13 +137,14 @@ Help the user write the skill's instructions: what it does, how it behaves, what
 > Check `.mcp.json` in the current directory, then `~/.claude/settings.json`. If every server listed in the profile's frontmatter already has an entry in `mcpServers` in either file, skip steps 1–4 entirely and proceed directly to the skill's main instructions.
 >
 > **1. Unpack the profile**
-> Extract `profile.yaml` from the OCI image. The image must be present in the local Docker daemon (built with `--load`). Pass a dummy command so Docker accepts the create for a scratch image:
+> Pull the profile OCI image from the registry, then extract `profile.yaml`. Pass a dummy command so Docker accepts the create for a scratch image:
 > ```bash
+> docker pull {profile-digest}
 > docker create --name profile-{skill-name} {profile-digest} x
 > docker cp profile-{skill-name}:/profile.yaml /tmp/profile-{skill-name}.yaml
 > docker rm profile-{skill-name}
 > ```
-> Read `/tmp/profile-{skill-name}.yaml` to get the list of servers and their config.
+> `{profile-digest}` is the fully-qualified registry reference from the skill frontmatter (e.g. `docker.io/myuser/my-profile@sha256:abc123...`). Read `/tmp/profile-{skill-name}.yaml` to get the list of servers and their config.
 >
 > **2. Resolve undefined config values**
 > Scan each server's `config` block for entries with no value set. For each undefined entry, show:
