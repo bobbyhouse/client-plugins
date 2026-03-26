@@ -1,68 +1,134 @@
 ---
-description: Fetch a random passage from Wuthering Heights via Project Gutenberg, avoiding repeats from the last 2 days.
-profile: registry-1.docker.io/roberthouse224/wurthering-profile@sha256:29a1602bcf9913e48cb1b8baaa172893849e834310c52a0bbd5686bdb0bb9018
+description: Get a fresh passage from Wuthering Heights — one not seen in the last 30 days — and display it
+profile: sha256:1a2261f9c56002425fbfb546bdf12a034fd1a93008586c11b99c8553b4a7bac1
 restrictToolAccess:
   - mcp__project-gutenberg-mcp__list_passages
   - mcp__project-gutenberg-mcp__get_passage
-  - mcp__append-log-mcp__append
   - mcp__append-log-mcp__query
+  - mcp__append-log-mcp__append
 ---
 
-# wurthering skill
+# wurthering
 
-Fetch and display a random passage from Wuthering Heights, logging each one so repeats are avoided within a 2-day window.
+Display a passage from Wuthering Heights that hasn't been shown in the last 30 days, then log it.
 
-## Runtime Configuration
+---
 
-Before doing any work:
+## Step 0 — Check if already installed (idempotency)
 
-1. Pull `profile.yaml` from the profile OCI image referenced in the frontmatter digest:
-   ```
-   registry-1.docker.io/roberthouse224/wurthering-profile@sha256:29a1602bcf9913e48cb1b8baaa172893849e834310c52a0bbd5686bdb0bb9018
-   ```
-2. Scan `profile.yaml` for `config` entries with no value set (blank entries).
-3. For each undefined parameter, display its name and description and prompt the user to supply a value.
-   - Currently undefined: `GUTENBERG_BASE_URL` — URL of the Project Gutenberg mirror to read from (e.g. `https://www.gutenberg.org`).
-4. Once all required values are collected, proceed.
+Check `.mcp.json` in the current directory, then `~/.claude/settings.json`. If **both** of the following keys are already present in `mcpServers` in either file, skip Steps 1–4 and go straight to **Main Logic**:
+- `io.github.bobbyhouse/project-gutenberg-mcp`
+- `io.github.bobbyhouse/append-log-mcp`
 
-## Workflow
+---
 
-### Step 1 — Check recent history
+## Step 1 — Unpack the profile
 
-Call `mcp__append-log-mcp__query` to retrieve log entries from the last 2 days (48 hours). Extract the set of passage identifiers that have already been shown. Each log entry has the shape:
+Extract `profile.yaml` from the profile OCI image. Pass a dummy command so Docker accepts the create for a scratch image:
+
+```bash
+docker create --name profile-wurthering sha256:1a2261f9c56002425fbfb546bdf12a034fd1a93008586c11b99c8553b4a7bac1 x
+docker cp profile-wurthering:/profile.yaml /tmp/profile-wurthering.yaml
+docker rm profile-wurthering
+```
+
+Read `/tmp/profile-wurthering.yaml` to confirm the server list.
+
+---
+
+## Step 2 — Resolve undefined config values
+
+One config value is undefined and must be supplied by the user:
+
+**`GUTENBERG_BASE_URL`** (required)
+- Description: The base URL of a Project Gutenberg mirror (e.g. `https://www.gutenberg.org`)
+- Prompt the user: *"Enter the Project Gutenberg base URL:"*
+
+Store the supplied value for use in Step 4.
+
+---
+
+## Step 3 — Choose scope
+
+Ask the user where to register the MCP servers. Default is **project**:
+- **project** — `.mcp.json` in the current directory ← default
+- **user** — `~/.claude/settings.json`
+- **local** — `.claude/settings.local.json`
+
+---
+
+## Step 4 — Register MCP servers
+
+Pre-create the log file so Docker mounts a file rather than a directory:
+
+```bash
+touch ./append-log.jsonl
+```
+
+Read the target file from Step 3 (create `.mcp.json` if it doesn't exist). Merge in the following two entries and write the result back. Use the fully-pinned digest identifiers — no tags.
 
 ```json
 {
-  "timestamp": "<ISO 8601>",
-  "book_id": "768",
-  "passage_id": "<passage identifier>"
+  "mcpServers": {
+    "io.github.bobbyhouse/project-gutenberg-mcp": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-e", "GUTENBERG_BASE_URL=<value from Step 2>",
+        "-e", "GUTENBERG_TOOLS=list_passages,get_passage",
+        "-e", "GUTENBERG_BOOK_ID=768",
+        "roberthouse224/project-gutenberg-mcp@sha256:6460cba7b27343be72a85cbf5484e024711eb3aa824a18b69e67fe906722aa8d"
+      ]
+    },
+    "io.github.bobbyhouse/append-log-mcp": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-v", "./append-log.jsonl:/data/log.jsonl",
+        "-e", "APPEND_LOG_TOOLS=append,query",
+        "-e", "APPEND_LOG_FILE=/data/log.jsonl",
+        "roberthouse224/append-log-mcp@sha256:5008d346d8c653caab0309999e694a2a63cf3b2c3bcb7127a1bd492ed074476f"
+      ]
+    }
+  }
 }
 ```
 
-### Step 2 — List available passages
+Tell the user the servers have been registered and that they may need to restart Claude Code for MCP changes to take effect.
 
-Call `mcp__project-gutenberg-mcp__list_passages` for book ID `768` (Wuthering Heights). This returns a list of passage identifiers/indices.
+---
 
-### Step 3 — Select a fresh passage
+## Main Logic
 
-From the full list of passages, remove any whose `passage_id` appears in the recent history set from Step 1.
+### 1. Query recent history
 
-- If fresh passages remain, pick one at random.
-- If **all** passages were shown within the last 2 days, pick the one whose most recent log entry is the oldest (i.e. the least recently shown), so the user gets something different.
+Call `mcp__append-log-mcp__query` with `since_days: 30`. Extract the `passage_key` field from each logged entry to build a set of recently-seen passage keys.
 
-### Step 4 — Fetch and display the passage
+### 2. List all passages
 
-Call `mcp__project-gutenberg-mcp__get_passage` with the selected passage identifier. Display the retrieved text to the user.
+Call `mcp__project-gutenberg-mcp__list_passages` (no `book_id` argument — the server is configured with `GUTENBERG_BOOK_ID=768`). This returns a list of passage keys for Wuthering Heights.
 
-### Step 5 — Log the passage
+### 3. Pick an unseen passage
 
-Call `mcp__append-log-mcp__append` to record the shown passage:
+Find the first passage key not in the recently-seen set. If **all** passages have been seen in the last 30 days, pick the passage whose `logged_at` timestamp is the oldest (least recently seen).
+
+### 4. Fetch the passage
+
+Call `mcp__project-gutenberg-mcp__get_passage` with the chosen key. The key format is `{book_id}:{byte_offset}` (e.g. `768:4096`).
+
+### 5. Display the passage
+
+Present the passage text to the user, formatted as a block quote. Include a small header showing the passage key for reference.
+
+### 6. Log the passage
+
+Call `mcp__append-log-mcp__append` with a JSON payload:
 
 ```json
 {
-  "book_id": "768",
-  "passage_id": "<the passage identifier used>"
+  "passage_key": "<the key used>",
+  "skill": "wurthering"
 }
 ```
 
-The server automatically timestamps the entry.
+This records the passage so it won't be shown again for 30 days.

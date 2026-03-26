@@ -29,30 +29,37 @@ Repeat until the user is done adding servers.
 
 ### Step 2.2 — Fetch registry entries
 
-For each server, call the MCP registry API:
+URL-encode each server name before use (replace every `/` with `%2F`).
 
+**If the user specified a concrete version:**
 ```
-GET https://registry.modelcontextprotocol.io/v0.1/servers/{serverName}/versions/{version}
+GET https://registry.modelcontextprotocol.io/v0/servers/{encodedServerName}/versions/{version}
 ```
 
-Find the package entry with `registryType: oci`. Extract:
-- `identifier` — the OCI image reference with tag (e.g. `ghcr.io/owner/repo:v1.0.0`)
+**If the user said "latest"**, list all versions and find the current one:
+```
+GET https://registry.modelcontextprotocol.io/v0/servers/{encodedServerName}/versions
+```
+Find the entry where `_meta["io.modelcontextprotocol.registry/official"].isLatest === true`. Use that entry's `server.version` for the next step.
+
+From the response, find the entry in `packages` with `registryType: oci`. Extract:
+- `identifier` — the OCI image reference with tag (e.g. `docker.io/owner/repo:v1.0.0`)
 - `environmentVariables` — array of config options
 
 If no OCI package exists for a server, inform the user and skip it.
 
 ### Step 2.3 — Resolve tags to digests
 
-For each OCI identifier, resolve the mutable tag to an immutable digest. Parse into registry, repository, and tag, then call:
+For each OCI identifier, resolve the mutable tag to an immutable manifest digest. `docker pull` handles registry authentication automatically:
 
+```bash
+docker pull {identifier}
+docker inspect --format='{{index .RepoDigests 0}}' {identifier}
 ```
-GET https://{registry}/v2/{repository}/manifests/{tag}
-Accept: application/vnd.oci.image.manifest.v1+json
-```
 
-Read the `Docker-Content-Digest` response header to get the `sha256:...` digest. Store the server as `{registry}/{repository}@{digest}` — drop the tag entirely.
+The output is `{registry}/{repository}@sha256:{manifest-digest}`. This is the pinned identifier — drop the tag entirely, keep only the `@sha256:...` form.
 
-If a digest cannot be resolved, inform the user and ask whether to skip the server or abort.
+If the pull fails, inform the user and ask whether to skip the server or abort.
 
 ### Step 2.4 — Walk through configuration options
 
@@ -83,23 +90,28 @@ Ask the user what to name the profile and where to write the file before writing
 
 ### Step 2.6 — Build scratch OCI image
 
-Build the manifest into a scratch OCI image using `oras` or `docker buildx`:
+Write a `Dockerfile` next to `profile.yaml`:
 
-**Option A — oras (preferred):**
-```bash
-oras push {registry}/{repository}:{tag} profile.yaml:application/yaml
-```
-
-**Option B — docker with scratch base:**
 ```dockerfile
 FROM scratch
 COPY profile.yaml /profile.yaml
 ```
+
+Detect the host architecture and build, loading directly into the local Docker daemon:
+
 ```bash
-docker buildx build --platform linux/amd64 -t {image-ref} --output type=oci,dest=profile.tar .
+ARCH=$(uname -m)
+case "$ARCH" in
+  arm64|aarch64) PLATFORM="linux/arm64" ;;
+  *)             PLATFORM="linux/amd64" ;;
+esac
+
+docker buildx build --platform $PLATFORM -t {profile-name} --load .
+DIGEST=$(docker inspect --format='{{.Id}}' {profile-name})
+echo "Profile digest: ${DIGEST}"
 ```
 
-Record the image digest from the output. This digest is the profile's content-addressable reference.
+Use `${DIGEST}` (e.g. `sha256:abc123...`) as the `profile:` value in the skill's frontmatter. This is the image's content-addressable identifier. The `--load` flag stores the image in the local Docker daemon so it can be referenced by this digest later.
 
 ## Phase 3 — Define skill tools
 
@@ -111,32 +123,82 @@ Help the user write the skill's instructions: what it does, how it behaves, what
 
 > **Runtime config step (include in generated SKILL.md):**
 > Before doing any real work, the skill must:
-> 1. Pull `config.yaml` from the profile OCI image referenced in the frontmatter digest
-> 2. Scan the manifest for `config` entries with no value set
-> 3. For each undefined parameter, show the name and description and prompt the user to supply a value; treat `isSecret: true` entries sensitively
-> 4. Once all required parameters are supplied, proceed with the skill's instructions
+>
+> **0. Check if already installed (idempotency)**
+> Check `.mcp.json` in the current directory, then `~/.claude/settings.json`. If every server listed in the profile's frontmatter already has an entry in `mcpServers` in either file, skip steps 1–4 entirely and proceed directly to the skill's main instructions.
+>
+> **1. Unpack the profile**
+> Extract `profile.yaml` from the OCI image. The image must be present in the local Docker daemon (built with `--load`). Pass a dummy command so Docker accepts the create for a scratch image:
+> ```bash
+> docker create --name profile-{skill-name} {profile-digest} x
+> docker cp profile-{skill-name}:/profile.yaml /tmp/profile-{skill-name}.yaml
+> docker rm profile-{skill-name}
+> ```
+> Read `/tmp/profile-{skill-name}.yaml` to get the list of servers and their config.
+>
+> **2. Resolve undefined config values**
+> Scan each server's `config` block for entries with no value set. For each undefined entry, show:
+> - Name and description
+> - Whether it is required
+> Prompt the user to supply a value. Treat `isSecret: true` entries sensitively (do not echo).
+>
+> For URL-type config values, proactively suggest `host.docker.internal` as the default hostname for services on the host machine (e.g. `http://host.docker.internal:8080`). If the user provides a value containing `localhost`, warn them and suggest correcting it.
+>
+> For file path config values, suggest `./filename.ext` as the default (relative to the project directory).
+>
+> Collect all values before proceeding.
+>
+> **3. Prompt for scope**
+> Ask the user where to register the MCP servers. Default is **project** (`.mcp.json`):
+> - **project** — `.mcp.json` in the current directory (committed, shared with team) ← default
+> - **user** — `~/.claude/settings.json` (applies across all projects)
+> - **local** — `.claude/settings.local.json` in the current directory (git-ignored, private)
+>
+> **4. Update settings**
+> Read the target file from Step 3 (`.mcp.json` for project scope; create it if it does not exist). The `.mcp.json` schema only allows `mcpServers` — do not add any other top-level keys.
+>
+> For servers that use volume mounts: Docker creates a **directory** (not a file) if the host path does not exist. Pre-create the file before writing the config:
+> ```bash
+> touch ./filename.ext
+> ```
+> Use the path the user provided from Step 2 (default `./filename.ext`). Do not attempt to resolve or compute absolute paths.
+>
+> **Important:** MCP servers running in Docker do not inherit the host `env` block. Pass all config values as `-e KEY=VALUE` flags inside the `args` array — do not use the `env` field:
+> ```json
+> {
+>   "mcpServers": {
+>     "{server-name}": {
+>       "command": "docker",
+>       "args": [
+>         "run", "--rm", "-i",
+>         "-e", "OPTION_ONE=resolved-value",
+>         "-e", "OPTION_TWO=other-value",
+>         "{identifier}"
+>       ]
+>     }
+>   }
+> }
+> ```
+> Use the fully-pinned `identifier` (digest form, no tag). Write the merged result back to the target file.
+>
+> **5. Proceed**
+> Once settings are written, continue with the skill's main instructions.
 
-## Phase 5 — Emit skill files
+## Phase 5 — Emit the skill
 
-Write the plugin directory with two files.
+Ask the user where to write the skill. Common locations:
+- `~/.claude/skills/{skill-name}/SKILL.md` — user-level, available in all projects
+- `.claude/skills/{skill-name}/SKILL.md` — project-level, scoped to the current project
 
-**SKILL.md frontmatter:**
+Write a single `SKILL.md` at the chosen path:
+
 ```yaml
 ---
 description: {description}
-profile: {registry}/{repository}@{digest}
+profile: sha256:{image-id}
 restrictToolAccess:
   - mcp__server-name__tool-name
 ---
 ```
 
-**plugin.json:**
-```json
-{
-  "name": "{skill-name}",
-  "version": "1.0.0",
-  "description": "{description}"
-}
-```
-
-Ask the user where to write the plugin directory before writing it.
+Followed by the skill body authored in Phase 4.
