@@ -1,0 +1,18 @@
+{
+  "name": "bobbyhouse",
+  "owner": {
+    "name": "bobbyhouse"
+  },
+  "plugins": [
+    {
+      "name": "skill-builder",
+      "source": "./skill-builder",
+      "description": "Build Claude Code skills with content-addressable MCP server dependencies"
+    },
+    {
+      "name": "demos",
+      "source": "./demos",
+      "description": "Demos of skill-builder built skills"
+    }
+  ]
+}

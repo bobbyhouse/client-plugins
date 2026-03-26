@@ -1,0 +1,5 @@
+{
+  "name": "skill-builder",
+  "version": "1.0.0",
+  "description": "Build Claude Code skills with content-addressable MCP server dependencies"
+}
