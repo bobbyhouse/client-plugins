@@ -11,7 +11,6 @@ Tools for creating Claude Code skills that pin their MCP server dependencies to 
 **Slash commands:**
 
 - `/skill-builder` — End-to-end workflow: collects skill intent, creates a profile, defines tool access, authors skill instructions, and emits the plugin directory.
-- `/skill-builder:profiles` — Standalone profile creation. Useful for creating or updating profiles independently of a full skill build.
 
 A **profile** is a YAML manifest of MCP servers pinned to immutable OCI digests, bundled into a scratch OCI image. Skills reference a profile digest in their frontmatter to guarantee reproducible dependencies across any environment.
 
@@ -21,7 +20,7 @@ See [`skill-builder/NOTES.md`](skill-builder/NOTES.md) for technical details on 
 
 Example skills built with skill-builder.
 
-- `/demos:wurthering` — Fetches a random passage from *Wuthering Heights* via Project Gutenberg, avoiding passages shown in the last 2 days.
+- `/demos:wurthering` — Fetches a random passage from *Wuthering Heights* via Project Gutenberg, avoiding passages shown in the last 30 days.
 
 ## Structure
 
@@ -31,8 +30,7 @@ plugins/
 ├── skill-builder/                    # skill-builder plugin
 │   ├── NOTES.md                      # Technical reference
 │   └── skills/
-│       ├── skill-builder/SKILL.md    # /skill-builder command
-│       └── profiles/SKILL.md         # /skill-builder:profiles command
+│       └── skill-builder/SKILL.md    # /skill-builder command
 └── demos/                            # Demo skills
     └── skills/
         └── wurthering/SKILL.md       # Wuthering Heights passage fetcher
