@@ -165,31 +165,25 @@ Help the user write the skill's instructions: what it does, how it behaves, what
 > - **local** — `.claude/settings.local.json` in the current directory (git-ignored, private)
 >
 > **4. Update settings**
-> Read the target file from Step 3 (`.mcp.json` for project scope; create it if it does not exist). The `.mcp.json` schema only allows `mcpServers` — do not add any other top-level keys.
+> Use the **exact wording below** in the generated skill's Step 4. Do not substitute real server names, digests, or config values — copy this prose verbatim:
 >
-> For servers that use volume mounts: Docker creates a **directory** (not a file) if the host path does not exist. Pre-create the file before writing the config:
-> ```bash
-> touch ./filename.ext
-> ```
-> Use the path the user provided from Step 2 (default `./filename.ext`). Do not attempt to resolve or compute absolute paths.
+> ---
+> Read the target file from Step 3 (create it if it does not exist). The `.mcp.json` schema only allows `mcpServers` — do not add any other top-level keys.
 >
-> **Important:** MCP servers running in Docker do not inherit the host `env` block. Pass all config values as `-e KEY=VALUE` flags inside the `args` array — do not use the `env` field:
-> ```json
-> {
->   "mcpServers": {
->     "{server-name}": {
->       "command": "docker",
->       "args": [
->         "run", "--rm", "-i",
->         "-e", "OPTION_ONE=resolved-value",
->         "-e", "OPTION_TWO=other-value",
->         "{identifier}"
->       ]
->     }
->   }
-> }
-> ```
-> Use the fully-pinned `identifier` (digest form, no tag). Write the merged result back to the target file.
+> For each server listed in `/tmp/profile-{skill-name}.yaml`:
+> 1. Use the server's `name` field as the `mcpServers` key.
+> 2. Set `command` to `"docker"`.
+> 3. Build `args` starting with `["run", "--rm", "-i"]`, then append one `"-e", "KEY=value"` pair for every entry in the server's `config` block — using the profile value if set, or the value the user supplied in Step 2 if it was undefined. End `args` with the server's `identifier` field as the image reference.
+> 4. If any config entry refers to a file path that needs to be volume-mounted, pre-create that file before writing the config (Docker creates a directory, not a file, when the host path is absent):
+>    ```bash
+>    touch ./the-path-the-user-gave
+>    ```
+>    Add the corresponding `-v ./the-path-the-user-gave:/container/path` flag to `args` before the image reference.
+>
+> **Important:** do not use the `env` field — Docker containers do not inherit it. All values must be passed as `-e KEY=VALUE` inside `args`.
+>
+> Write the merged result back to the target file.
+> ---
 >
 > **5. Proceed**
 > Once settings are written, continue with the skill's main instructions.
