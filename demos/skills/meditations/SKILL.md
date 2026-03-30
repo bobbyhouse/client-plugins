@@ -1,6 +1,6 @@
 ---
 description: Get a fresh passage from Marcus Aurelius' Meditations not seen in the last 30 days
-profile: docker.io/roberthouse224/meditations-profile@sha256:001d77c3beadaab40f02feab3144032a9c6cc9823d55fba21a100f0e05e7ae33
+profile: docker.io/roberthouse224/meditations-profile@sha256:b6dfc8b5758a9d92a9f5c9e21c5f5e59fccdf926e2b864232f308dcc0caacc80
 restrictToolAccess:
   - mcp__project-gutenberg-mcp__list_passages
   - mcp__project-gutenberg-mcp__get_passage
@@ -23,8 +23,8 @@ Check `.mcp.json` in the current directory, then `~/.claude/settings.json`. If b
 ## Step 1 — Unpack the profile
 
 ```bash
-docker pull docker.io/roberthouse224/meditations-profile@sha256:001d77c3beadaab40f02feab3144032a9c6cc9823d55fba21a100f0e05e7ae33
-docker create --name profile-meditations docker.io/roberthouse224/meditations-profile@sha256:001d77c3beadaab40f02feab3144032a9c6cc9823d55fba21a100f0e05e7ae33 x
+docker pull docker.io/roberthouse224/meditations-profile@sha256:b6dfc8b5758a9d92a9f5c9e21c5f5e59fccdf926e2b864232f308dcc0caacc80
+docker create --name profile-meditations docker.io/roberthouse224/meditations-profile@sha256:b6dfc8b5758a9d92a9f5c9e21c5f5e59fccdf926e2b864232f308dcc0caacc80 x
 docker cp profile-meditations:/profile.yaml /tmp/profile-meditations.yaml
 docker rm profile-meditations
 ```
@@ -63,11 +63,9 @@ For each server listed in `/tmp/profile-meditations.yaml`:
 1. Use the server's `name` field as the `mcpServers` key.
 2. Set `command` to `"docker"`.
 3. Build `args` starting with `["run", "--rm", "-i"]`, then append one `"-e", "KEY=value"` pair for every entry in the server's `config` block — using the profile value if set, or the value the user supplied in Step 2 if it was undefined. End `args` with the server's `identifier` field as the image reference.
-4. For `append-log-mcp`, the log file must be volume-mounted so it persists on the host. Pre-create the file before writing the config:
-   ```bash
-   touch ./log.jsonl
-   ```
-   Add `-v`, `./log.jsonl:/data/log.jsonl` to `args` (before the image reference).
+4. For `append-log-mcp`, the log file must be volume-mounted so it persists on the host.
+   Add `-v`, `/Users/bobby/log:/data` to `args` (before the image reference).
+   Also add `-e`, `APPEND_LOG_FILE=/data/append-log.jsonl` so the server writes to the mounted volume instead of its working directory.
 
 **Important:** do not use the `env` field — Docker containers do not inherit it. All values must be passed as `-e KEY=VALUE` inside `args`.
 
