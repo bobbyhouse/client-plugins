@@ -8,23 +8,28 @@ Retrieve a passage from Marcus Aurelius' *Meditations* (Gutenberg book 2680) tha
 
 ## Bootstrap
 
-Before any other tool calls, find the available tool whose name ends with `__load` and call it:
-
-```
-<that-tool>(
-  profile="docker.io/roberthouse224/meditations-profile@sha256:54b8a42e1a255e265479408adc0f9267b6d0241fd07a8583e5dc49695250a826",
-  config={}
-)
-```
-
-If no tool ending in `__load` is available, tell the user the gateway plugin does not appear to be installed and stop.
-
-If the `load` call returns an error whose message contains "missing required config keys", ask the user to supply values for each missing key:
+Before any other tool calls, ask the user to supply the following two values (do not skip this step even if you think you know the values):
 
 - **`GUTENBERG_BASE_URL`** — the base URL of their Gutenberg mirror (e.g. `https://www.gutenberg.org`). If running a local mirror, use `http://host.docker.internal:<port>` — do not use `localhost`.
 - **`LOG_DIR`** — an absolute path to a directory on the host where the log file will be persisted (e.g. `~/.claude/meditations-log`). The directory will be created if it does not exist.
 
-Retry the `load` call with `config` supplying the collected values.
+Once you have those values, find the available tool whose name ends with `__load` and call it.
+
+If no tool ending in `__load` is available, tell the user the gateway plugin does not appear to be installed and stop.
+
+**CRITICAL — `config` must be a JSON object, never a string.** Pass it like this (with the actual values substituted):
+
+```json
+{
+  "profile": "docker.io/roberthouse224/meditations-profile@sha256:54b8a42e1a255e265479408adc0f9267b6d0241fd07a8583e5dc49695250a826",
+  "config": {
+    "GUTENBERG_BASE_URL": "<value supplied by user>",
+    "LOG_DIR": "<value supplied by user>"
+  }
+}
+```
+
+Do **not** serialize `config` as a string (e.g. `"{}"` or `"{\"KEY\":\"value\"}"`) — it must be a plain JSON object.
 
 ## Fetch a fresh passage
 
