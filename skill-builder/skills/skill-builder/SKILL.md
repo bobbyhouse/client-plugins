@@ -78,7 +78,13 @@ For each server, present its `environmentVariables` one at a time. For each opti
 - Whether it is a secret (`isSecret`)
 - Default value, if any
 
-Ask: set a value for this option, or leave it undefined for the end-user to supply?
+Ask: set a value for this option, or leave it for the end-user to supply at invocation time?
+
+If the user sets a value, it goes into the profile as a literal string. If they leave it for the end-user, write it as a `${KEY}` placeholder — the gateway will require the caller to supply that key via the `config` argument on `load`.
+
+**Required env vars (`isRequired: true`) with no default value must never be omitted from the profile.** If the user does not supply a literal value, it must become a `${KEY}` placeholder. Silently dropping a required var will cause the container to crash on startup.
+
+Then ask: does this server need any host paths mounted into the container? For each mount, collect a `host:container` path pair. Host paths may use `${KEY}` placeholders — the gateway resolves them the same way it resolves config values, so the caller must supply the key via `config` on `load`.
 
 ### Step 2.6 — Emit the profile manifest
 
@@ -91,7 +97,10 @@ servers:
     identifier: {registry}/{repository}@{digest}
     config:
       OPTION_ONE: value          # set by profile
-      OPTION_TWO:                # undefined — end-user supplies this
+      OPTION_TWO: ${OPTION_TWO}  # end-user supplies this via invoke config
+    mounts:
+      - /host/path:/container/path        # literal host path
+      - ${WORKSPACE_DIR}:/workspace       # end-user supplies WORKSPACE_DIR via invoke config
 ```
 
 Ask the user what to name the profile and where to write the file before writing it.
@@ -120,75 +129,58 @@ DIGEST=$(jq -r '."containerimage.digest"' /tmp/profile-build-meta.json)
 echo "Profile digest: ${IMAGE}@${DIGEST}"
 ```
 
-`${IMAGE}@${DIGEST}` is the fully-qualified registry reference (e.g. `docker.io/myuser/my-profile@sha256:abc123...`). Use this as the `profile:` value in the skill's frontmatter. This digest is immutable and resolves from any machine.
+`${IMAGE}@${DIGEST}` is the fully-qualified registry reference (e.g. `docker.io/myuser/my-profile@sha256:abc123...`). Record this — it becomes the `profile` argument in the `load` call in the skill body.
 
-## Phase 3 — Define skill tools
+## Phase 3 — Resolve the gateway load tool name
 
-Ask the user which specific MCP tools the skill will call. These come from the servers in the profile. Format: `mcp__server-name__tool-name`. Collect the full list — these become the `restrictToolAccess` entries.
+The gateway MCP server can be registered under any name — you only know that its bootstrap tool is always called `load`. Before authoring the skill, determine the fully-qualified tool name.
 
-## Phase 4 — Author the skill body
+Look at your available tools and find the one whose name ends with `__load`. That tool name (e.g. `mcp__profile-gateway__load` or `mcp__gateway__load`) confirms the gateway is available. Record it as `{gateway-load-tool}` for use in Phase 5.
 
-Help the user write the skill's instructions: what it does, how it behaves, what tools it calls and when. The generated skill body must include a configuration step at the very top of its instructions:
+If no such tool is available, tell the user that the gateway plugin does not appear to be installed or enabled, and ask them to install it before continuing.
 
-> **Runtime config step (include in generated SKILL.md):**
-> Before doing any real work, the skill must:
+The generated skill must **not** hardcode this name. Instead, it must instruct the executing Claude to discover the gateway tool at runtime by finding the available tool whose name ends with `__load` and using that name for the bootstrap call.
+
+## Phase 4 — Identify downstream tools
+
+Ask the user which specific MCP tools the skill will call. These come from the servers in the profile. Collect the full list in `server-name__tool-name` format — they will be referenced in the skill body in Phase 5. Argument schemas do not need to be documented; they will be available to the executing Claude after the profile is loaded.
+
+## Phase 5 — Author the skill body
+
+Help the user write the skill's instructions: what it does, how it behaves, what tools it calls and when.
+
+**Bootstrap pattern (use this in every generated skill):**
+
+The skill must open with a bootstrap section that loads the profile before doing anything else. This registers the downstream MCP tools into the session so the executing Claude can call them directly with their real schemas.
+
+Example wording:
+
+> ## Bootstrap
 >
-> **0. Check if already installed (idempotency)**
-> Check `.mcp.json` in the current directory, then `~/.claude/settings.json`. If every server listed in the profile's frontmatter already has an entry in `mcpServers` in either file, skip steps 1–4 entirely and proceed directly to the skill's main instructions.
+> Before making any other tool calls, find the available tool whose name ends with `__load` and call it to load the profile:
 >
-> **1. Unpack the profile**
-> Pull the profile OCI image from the registry, then extract `profile.yaml`. Pass a dummy command so Docker accepts the create for a scratch image:
-> ```bash
-> docker pull {profile-digest}
-> docker create --name profile-{skill-name} {profile-digest} x
-> docker cp profile-{skill-name}:/profile.yaml /tmp/profile-{skill-name}.yaml
-> docker rm profile-{skill-name}
 > ```
-> `{profile-digest}` is the fully-qualified registry reference from the skill frontmatter (e.g. `docker.io/myuser/my-profile@sha256:abc123...`). Read `/tmp/profile-{skill-name}.yaml` to get the list of servers and their config.
+> <gateway-load-tool>(
+>   profile="{profile-digest}",
+>   config={...any config values known at authoring time...}
+> )
+> ```
 >
-> **2. Resolve undefined config values**
-> Scan each server's `config` block for entries with no value set. For each undefined entry, show:
-> - Name and description
-> - Whether it is required
-> Prompt the user to supply a value. Treat `isSecret: true` entries sensitively (do not echo).
->
-> For URL-type config values, proactively suggest `host.docker.internal` as the default hostname for services on the host machine (e.g. `http://host.docker.internal:8080`). If the user provides a value containing `localhost`, warn them and suggest correcting it.
->
-> For file path config values, suggest `./filename.ext` as the default (relative to the project directory).
->
-> Collect all values before proceeding.
->
-> **3. Prompt for scope**
-> Ask the user where to register the MCP servers. Default is **project** (`.mcp.json`):
-> - **project** — `.mcp.json` in the current directory (committed, shared with team) ← default
-> - **user** — `~/.claude/settings.json` (applies across all projects)
-> - **local** — `.claude/settings.local.json` in the current directory (git-ignored, private)
->
-> **4. Update settings**
-> Use the **exact wording below** in the generated skill's Step 4. Do not substitute real server names, digests, or config values — copy this prose verbatim:
->
-> ---
-> Read the target file from Step 3 (create it if it does not exist). The `.mcp.json` schema only allows `mcpServers` — do not add any other top-level keys.
->
-> For each server listed in `/tmp/profile-{skill-name}.yaml`:
-> 1. Use the server's `name` field as the `mcpServers` key.
-> 2. Set `command` to `"docker"`.
-> 3. Build `args` starting with `["run", "--rm", "-i"]`, then append one `"-e", "KEY=value"` pair for every entry in the server's `config` block — using the profile value if set, or the value the user supplied in Step 2 if it was undefined. End `args` with the server's `identifier` field as the image reference.
-> 4. If any config entry refers to a file path that needs to be volume-mounted, pre-create that file before writing the config (Docker creates a directory, not a file, when the host path is absent):
->    ```bash
->    touch ./the-path-the-user-gave
->    ```
->    Add the corresponding `-v ./the-path-the-user-gave:/container/path` flag to `args` before the image reference.
->
-> **Important:** do not use the `env` field — Docker containers do not inherit it. All values must be passed as `-e KEY=VALUE` inside `args`.
->
-> Write the merged result back to the target file.
-> ---
->
-> **5. Proceed**
-> Once settings are written, continue with the skill's main instructions.
+> If no such tool is available, tell the user the gateway plugin does not appear to be installed.
 
-## Phase 5 — Emit the skill
+Where `{profile-digest}` is the fully-qualified OCI reference from Phase 2.7 — a constant baked into the skill body.
+
+**Handling missing config (use this in every generated skill that has `${KEY}` placeholders):**
+
+If the `load` call returns an error whose message contains "missing required config keys", the skill must:
+1. Show the user which keys are missing and ask them to supply values. For URL-type keys suggest `http://host.docker.internal:<port>` for local services; warn if the user provides a value containing `localhost`. For file path keys (including mount host paths) suggest an absolute path.
+2. Retry the `load` call with a `config` argument supplying the collected values.
+
+**Calling downstream tools:**
+
+After `load` succeeds, the downstream tools are registered in the session and available to call directly — they appear as `server-name__tool-name` in the executing Claude's tool list with their real input schemas. The skill body should describe which tools to call and what to do with their results, without specifying argument schemas (the executing Claude will have those from the registered tool definitions).
+
+## Phase 6 — Emit the skill
 
 Ask the user where to write the skill. Common locations:
 - `~/.claude/skills/{skill-name}/SKILL.md` — user-level, available in all projects
@@ -199,10 +191,7 @@ Write a single `SKILL.md` at the chosen path:
 ```yaml
 ---
 description: {description}
-profile: sha256:{image-id}
-restrictToolAccess:
-  - mcp__server-name__tool-name
 ---
 ```
 
-Followed by the skill body authored in Phase 4.
+Followed by the skill body authored in Phase 5. Do not add `restrictToolAccess` — the gateway tool name and downstream tool names are discovered at runtime and are not known at authoring time.

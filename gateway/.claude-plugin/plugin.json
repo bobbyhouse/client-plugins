@@ -1,0 +1,16 @@
+{
+  "name": "gateway",
+  "version": "1.0.0",
+  "description": "Profile gateway — proxies MCP tool calls to profile-declared servers",
+  "mcpServers": {
+    "profile-gateway": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-v", "/var/run/docker.sock:/var/run/docker.sock",
+        "-v", "profile-gateway-cache:/cache",
+        "docker.io/roberthouse224/profile-gateway@sha256:3100db502bb27f40d02721c1847dc93a9621ca06f87e0b58e08c1b4102439535"
+      ]
+    }
+  }
+}

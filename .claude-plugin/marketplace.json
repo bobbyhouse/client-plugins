@@ -13,6 +13,11 @@
       "name": "demos",
       "source": "./demos",
       "description": "Demos of skill-builder built skills"
+    },
+    {
+      "name": "gateway",
+      "source": "./gateway",
+      "description": "Profile gateway — proxies MCP tool calls to profile-declared servers"
     }
   ]
 }

@@ -1,0 +1,7 @@
+version: '3'
+
+tasks:
+  install:
+    desc: Build and install gateway binary to $HOME/.local/bin
+    cmds:
+      - go build -o $HOME/.local/bin/gateway ./cmd/gateway
